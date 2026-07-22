@@ -523,10 +523,100 @@ interface CollisionRecord {
 ---
 
 
+### 4.3 GameFSM 狀態機規格 (2026-07-22 定案，回應 Q20.1 / Q20.2 / Q20.4 / Q20.5)
+
+
+#### 4.3.1 `GameStateType` 權威型別宣告 (Q20.1)
+
+
+typescript
+// src/core/engine/GameFSM.ts
+
+export type GameStateType =
+  | 'BOOTSTRAP'               // 1. 系統初始化/載入存檔
+  | 'ROLE_SELECT'             // 2. 標題大廳/角色選擇
+  | 'GARAGE_PREPARATION'      // 3. 整備大廳 (修車/升級/場景選擇)
+  | 'IN_GAME_RUNNING'         // 4. 關卡實時進行中 (Tick 運算)
+  | 'IN_GAME_PAUSED_ACCIDENT' // 5. 發生碰撞，物理凍結 (準備跳判決)
+  | 'VERDICT_POPUP'           // 6. 法庭責任判決書彈窗
+  | 'LEVEL_RESULT'            // 7. 關卡通關/結算畫面
+  | 'GAME_OVER_HARD_RESET';   // 8. 破產清算與硬重置
+
+
+此 8 個狀態為 MVP2 官方完整清單，§16.3 `ScreenTransitionRequest.fsmState: GameStateType` 引用同一型別。
+
+
+#### 4.3.2 狀態轉移矩陣與非法轉移例外處理 (Q20.2)
+
+
+當於非法狀態發送指令或觸發矩陣以外的轉移時，`GameFSM` **必須拋出 `InvalidStateTransitionError` 自訂例外**（不得無效化吞掉，符合 §2.4.2 DoD「必須拋出異常或無效化」二選一的前段）。
+
+
+| 當前狀態 (`FromState`) | 允許觸發之動作 (`FSMAction`) | 轉移後狀態 (`ToState`) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **`BOOTSTRAP`** | `INIT_COMPLETE` | `ROLE_SELECT` | 初始化成功，進入角色選擇 |
+| **`ROLE_SELECT`** | `SELECT_ROLE` | `GARAGE_PREPARATION` | 選擇駕駛/路人角色進入整備大廳 |
+| **`GARAGE_PREPARATION`** | `START_LEVEL` | `IN_GAME_RUNNING` | 通過戰前檢查，開始關卡 |
+| **`GARAGE_PREPARATION`** | `SWITCH_ROLE` | `ROLE_SELECT` | 返回角色選擇 |
+| **`GARAGE_PREPARATION`** | `TRIGGER_BANKRUPT` | `GAME_OVER_HARD_RESET` | 戰前檢查失敗且破產 |
+| **`IN_GAME_RUNNING`** | `COLLISION_OCCURRED` | `IN_GAME_PAUSED_ACCIDENT` | 發生車禍，凍結畫面 |
+| **`IN_GAME_RUNNING`** | `LEVEL_CLEAR` | `LEVEL_RESULT` | 安全抵達終點/達標通關 |
+| **`IN_GAME_PAUSED_ACCIDENT`**| `SHOW_VERDICT` | `VERDICT_POPUP` | 動態凍結結束，跳出判決書 |
+| **`VERDICT_POPUP`** | `CONFIRM_VERDICT` | `GARAGE_PREPARATION` | 簽認判決，返回整備大廳 |
+| **`VERDICT_POPUP`** | `TRIGGER_BANKRUPT` | `GAME_OVER_HARD_RESET` | 判決結算後資產歸零破產 |
+| **`LEVEL_RESULT`** | `RETURN_TO_GARAGE` | `GARAGE_PREPARATION` | 結算完成返回整備大廳 |
+| **`GAME_OVER_HARD_RESET`** | `EXECUTE_HARD_RESET` | `ROLE_SELECT` | 硬重置完成，退回標題頁 |
+
+
+> 表中未列出的「當前狀態 + 動作」組合一律視為非法轉移（例如 `VERDICT_POPUP` 收到 `ACCELERATE`），對應 §2.4.2 DoD 的斷言目標。
+> `WRONG_TURN` 不在此表中，見 §4.3.3（Q20.4）——它不經過這張矩陣，純粹是 `IN_GAME_RUNNING` 狀態內部的資料重置，不觸發任何 `FSMAction`。
+
+
+#### 4.3.3 `WRONG_TURN` 的 FSM 定位 (Q20.4)
+
+
+`WRONG_TURN` **不需要獨立的 FSM 狀態**，完全保留在 `IN_GAME_RUNNING` 內部處理，不算入 §4.3.2 的轉移矩陣：
+* 轉錯方向屬於「關卡內部事件」，不改變大流程狀態。
+* 偵測到 `WRONG_TURN` 時，`TickEngine` 內部呼叫 `processTurnError(retryCount, levelId)`（純函數，見 §10.4）：
+  * 未滿 3 次：更新 `retryCount`，車輛位置重置回關卡起點，狀態維持 `IN_GAME_RUNNING`。
+  * 滿 3 次（觸發降關）：`currentLevelId` 減 1、`retryCount` 歸零，重新載入上一關卡配置，狀態依然維持 `IN_GAME_RUNNING`。
+
+
+#### 4.3.4 `SaveManager` 與 `GameFSM` 的解耦機制 (Q20.5)
+
+
+採用 **觀察者模式 (Observer / Event-Driven)**，確保 `GameFSM` 維持純粹、不直接存取 I/O：
+
+
+1. `GameFSM` 提供訂閱介面：`onStateChange(callback: (from: GameStateType, to: GameStateType) => void)`。
+2. 局外協調器（`SaveManager` 或 `GameController`，非 `src/core/` 範疇）訂閱狀態變更事件，僅在切換至特定目標狀態時自動發起持久化：
+
+
+typescript
+// 外層協調邏輯 (src/adapters/ 或 App 層，非 src/core/)
+fsm.onStateChange((fromState, toState) => {
+  if (
+    toState === 'GARAGE_PREPARATION' ||
+    toState === 'VERDICT_POPUP' ||
+    toState === 'LEVEL_RESULT' ||
+    toState === 'GAME_OVER_HARD_RESET'
+  ) {
+    saveManager.saveCurrentState();
+  }
+});
+
+
+此設計符合 §13.1 列出的三個存檔觸發時機點：`onStateChange` 訂閱本身可以放在 `src/core/engine/GameFSM.ts`（僅回呼通知，不做 I/O），但實際呼叫 `saveManager.saveCurrentState()` 的協調程式碼必須放在 `src/core/` 之外。
+
+
+---
+
+
 ### 4.2 戰前檢查 (PreGameCheck) 門檻規範
 
 
-為防止玩家在殘血（HP < 50%）狀態下開局導致入場即死亡的惡性體驗，整備大廳進關卡前必須通過純函數 `checkPreGameAccess` 驗收：
+為防止玩家在殘血（HP < 50%）狀態下開局導致入場即死亡的惡性體驗，整備大廳進關卡前必須通過純函數 `validatePreGameAccess` 驗收
+（**2026-07-22 定案：函數正式命名統一為 `validatePreGameAccess`，取代先前文件中出現過的 `checkPreGameAccess` 舊稱**）。
 
 
 #### 門檻邊界與檢查邏輯
@@ -555,6 +645,47 @@ text
                          ▼                                   ▼
              [ 自動扣款修復至 50% ]                   [ 觸發破產重置 ]
               與允許進入關卡                 (GAME_OVER_HARD_RESET)
+
+
+#### 純函數介面 Signature (2026-07-22 定案，回應 Q20.3)
+
+
+typescript
+// 車輛/身體維修單價配置
+export interface RepairCostConfig {
+  repairCostPerHp: number; // 每點 HP 維修費用 ($/HP)
+}
+
+// 驗收輸入 Payload
+export interface PreGameAccessInput {
+  role: 'DRIVER' | 'PEDESTRIAN';
+  money: number;
+  hp: number;                       // 駕駛車輛 HP 或路人體力 HP (0~100)
+  repairConfig?: RepairCostConfig;  // 駕駛模式需傳入
+  accessMoneyThreshold?: number;    // 路人模式關卡准入門檻金額
+}
+
+// 驗收輸出結果
+export interface PreGameAccessResult {
+  canPass: boolean;               // 是否允許進入關卡
+  deductedMoney: number;          // 強制扣除的維修費用 (HP < 50 時觸發)
+  repairedHp: number;             // 修復後的 HP（若觸發修復，否則等於輸入 hp）
+  remainingMoney: number;         // 扣款後的剩餘金錢
+  triggerBankrupt: boolean;       // 是否觸發破產硬重置
+  failedReason?: string;          // 驗收失敗說明
+}
+
+/**
+ * 純函數：戰前門檻檢查與強修復邏輯
+ */
+export function validatePreGameAccess(input: PreGameAccessInput): PreGameAccessResult;
+
+
+> ⚠️ **待確認（未定案，暫不實作）**：本次定案文字中 `repairedHp` 註解寫「若觸發修復則為 100」，
+> 但本節流程圖與 Cost 公式（`Cost = (50 - HP) * repairCost`）從 v1 spec 起就一路定義成「強制修復至 **50**」，
+> 且 §16.2.2 已把「修復到 100%」劃給 `GarageScreen` 的另一個手動「全額修復」按鈕，兩者是不同機制。
+> `validatePreGameAccess` 觸發時 `repairedHp` 究竟該回 `50` 還是 `100`，請明確再定一次；
+> 在你回覆前，`collisionEngine` 以外的 `preGameCheck.ts` 實作會先照舊版「修復至 50」開工，不會自行假設成 100。
 
 
 
@@ -651,6 +782,23 @@ $$\text{UpgradeCost}(L) = \lfloor \text{BaseCost} \times (1.40)^{L - 1} \rfloor$
 4. 有限狀態機 (FSM) 強制切換回 `ROLE_SELECT` 狀態。
 
 
+#### 3. 純函數與 I/O 拆分 (2026-07-22 定案，回應 Q20.6)
+
+
+上述步驟 1 呼叫 `IStorageAdapter.clear()` 屬於 side effect，違反 §14.2 鐵律 1（`src/core/` 嚴禁副作用），因此拆分為兩層：
+
+
+typescript
+// src/core/progression/saveModel.ts — 純邏輯層，可 100% 單元測試
+/**
+ * 純函數：計算硬重置後的存檔狀態，不進行任何 LocalStorage 操作
+ */
+export function computeHardResetState(): GameSaveData {
+  return { ...INITIAL_GAME_SAVE };
+}
+
+
+
 typescript
 // 系統預設初始存檔常數 (Default Initial Game Save)
 const INITIAL_GAME_SAVE: GameSaveData = {
@@ -680,6 +828,18 @@ const INITIAL_GAME_SAVE: GameSaveData = {
     levelRecords: {}
   }
 };
+
+
+// src/adapters/WebStorageAdapter.ts — 協調層，允許呼叫 I/O，不算入 src/core/ 覆蓋率要求
+/**
+ * 協調函數：實際執行破產/主動重置的 I/O 動作
+ */
+export function executeHardReset(adapter: IStorageAdapter, storageKey: string): GameSaveData {
+  adapter.clear();
+  const resetState = computeHardResetState();
+  adapter.setItem(storageKey, JSON.stringify(resetState));
+  return resetState;
+}
 
 
 
@@ -2565,6 +2725,10 @@ function validateAndMigrateSaveData(rawData: unknown): GameSaveData {
 
 為了確保 `src/core/` 純邏輯層與 `localStorage` 徹底解耦，且單元測試能順暢執行，寫入與讀取全數透過 `IStorageAdapter` 介面：
 
+**檔案目錄歸屬（2026-07-22 定案，回應 Q20.7）**：
+* `src/core/storage/StorageAdapter.ts`：僅包含下方 `IStorageAdapter` 介面與測試用 `MemoryStorageAdapter`（§13.5 對應程式碼）。
+* `src/adapters/WebStorageAdapter.ts`：包含下方會實際存取 `window.localStorage` 的 `WebLocalStorageAdapter`（不算入 `src/core/` 100% 覆蓋率要求，也不受鐵律 1 的「嚴禁存取 localStorage」限制）。
+
 
 typescript
 // 抽象存儲轉接器介面
@@ -2576,7 +2740,7 @@ interface IStorageAdapter {
 }
 
 
-// 1. 實際 Web 瀏覽器環境轉接器
+// 1. 實際 Web 瀏覽器環境轉接器（歸屬 src/adapters/WebStorageAdapter.ts，非 src/core/）
 class WebLocalStorageAdapter implements IStorageAdapter {
   getItem(key: string): string | null {
     try {
@@ -3705,45 +3869,33 @@ json
 > Q19 系列（MVP1）已全數解決並回寫進對應章節。以下是針對 MVP2 範疇（§2.4.2、§4、§13）的第二輪缺口，
 > 狀態說明同第 19 章。
 
-### Q20.1 🔴 `GameStateType` 從未正式定義為列舉
-- §16.3 `ScreenTransitionRequest.fsmState: GameStateType` 直接引用這個型別，但全文找不到 `type GameStateType = ...` 的定義。
-- 目前只能從散落各處的字串反推出至少 8 個狀態：`BOOTSTRAP`、`ROLE_SELECT`、`GARAGE_PREPARATION`、`IN_GAME_RUNNING`、
-  `IN_GAME_PAUSED_ACCIDENT`、`VERDICT_POPUP`、`LEVEL_RESULT`、`GAME_OVER_HARD_RESET`（§16.3 switch case、§4、§12.1/§12.3 測試）。
-- **待答**：這 8 個是否為完整列表？`GameFSM.ts` 需要這個型別的正式宣告才能開始寫測試。
+### Q20.1 🟢 `GameStateType` 從未正式定義為列舉（2026-07-22 定案）
+- **決議**：確認 8 個狀態為完整官方清單。
+- **已回寫**：§4.3.1 新增 `GameStateType` 型別宣告。
 
-### Q20.2 🔴 沒有「狀態 × 合法指令」轉移矩陣
-- §2.4.2 DoD 明寫「在非法狀態發送指令（如在 `VERDICT_POPUP` 發送 `ACCELERATE`）必須拋出異常或無效化」，
-  但沒有任何一張表定義「每個狀態各自允許哪些指令/事件」。
-- **待答**：需要一份完整的「目前狀態 → 允許的 `InputCommand`/內部事件清單 → 下一狀態」矩陣，才能把 DoD 這條需求轉成可斷言的測試。
+### Q20.2 🟢 沒有「狀態 × 合法指令」轉移矩陣（2026-07-22 定案）
+- **決議**：非法轉移一律拋出 `InvalidStateTransitionError`；提供 12 條合法轉移的完整矩陣。
+- **已回寫**：§4.3.2 新增轉移矩陣表與例外處理規則。
 
-### Q20.3 🔴 `PreGameCheck` 函數命名不一致，且無正式 Interface
-- §4.2 文字定義的函數名稱是 `checkPreGameAccess`（第 527 行），但 §12.3 的官方測試範例呼叫的是 `validatePreGameAccess`（第 2181、2191 行）——兩個不同名字。
-- 這個函數沒有像 `calculateCollision` 一樣給出完整 `Input`/`Output` interface；`repairCostConfig` 這個測試中傳入的參數型別也從未定義（是 `number`？還是 `{ repairCostPerHp: number }` 物件？）。
-- 從 §12.3 兩個測試片段反推，回傳值至少要有 `canPass`、`deductedMoney`、`triggerBankrupt` 三個欄位，但沒人明確宣告過完整型別。
-- **待答**：函數正式名稱定案（建議統一為其中一個），並補上正式 `interface PreGameCheckInput/Output`。
+### Q20.3 🟡 `PreGameCheck` 命名與型別（2026-07-22 部分定案，仍有一項待確認）
+- **決議**：函數名稱統一為 `validatePreGameAccess`；`RepairCostConfig`/`PreGameAccessInput`/`PreGameAccessResult` 三個 interface 定案。
+- **已回寫**：§4.2 新增純函數介面 signature。
+- **⚠️ 仍待答**：新介面裡 `repairedHp` 註解寫「觸發修復則為 100」，但 §4.2 流程圖與 Cost 公式（`(50-HP)*repairCost`）、以及 §16.2.2 的手動全額修復（到 100%）都指向「強制修復只到 **50**」。這兩個數字哪個才對，需要你再確認一次；目前 SPEC.md 裡先保留舊版「修復至 50」的流程圖不動，沒有被新答案覆蓋。
 
-### Q20.4 🟡 `WRONG_TURN` 是否對應獨立 FSM 狀態
-- §4.1 描述 `WRONG_TURN` 只說「立即重置當前關卡」，沒說是否需要切換到一個獨立狀態（例如 `LEVEL_RESTART`），
-  還是單純停留在 `IN_GAME_RUNNING`、只更新 `retryCount` 計數器與重置位置。
-- **待答**：確認 `WRONG_TURN` 不觸發 FSM 狀態轉移（純粹是 `IN_GAME_RUNNING` 內部的資料重置），或需要新增狀態。
+### Q20.4 🟢 `WRONG_TURN` 是否對應獨立 FSM 狀態（2026-07-22 定案）
+- **決議**：不建立獨立狀態，維持在 `IN_GAME_RUNNING` 內部處理，不進入轉移矩陣。
+- **已回寫**：§4.3.3。
 
-### Q20.5 🟡 `SaveManager` 從未定義正式介面，存檔觸發時機是自動 hook 還是手動呼叫
-- §13.1 列了 3 個「存檔寫入動作」觸發時機點（升級/購車後、`CONFIRM_VERDICT` 後、通關或 `HardReset` 時），
-  但 `SaveManager` 本身（在目錄結構 §14.1 中列為 `src/core/storage/` 下的模組）沒有任何函數 signature。
-- **待答**：這 3 個觸發點是 `GameFSM` 狀態轉移時自動呼叫 `SaveManager.save()`（FSM 與 Storage 耦合），
-  還是由呼叫端（UI controller）各自在對應時機手動呼叫（FSM 與 Storage 各自獨立，符合 §14.1 分層原則但需要呼叫端自律）？
-  這是一個會影響 `GameFSM.ts` 介面設計的架構決策，需要在 MVP2 動工前定案。
+### Q20.5 🟢 `SaveManager` 與 `GameFSM` 解耦機制（2026-07-22 定案）
+- **決議**：觀察者模式，`GameFSM.onStateChange()` 廣播，實際存檔呼叫由 `src/core/` 之外的協調層負責。
+- **已回寫**：§4.3.4。
 
-### Q20.6 🟡 `HardReset()` 不是純函數，但被歸類在 `src/core/`
-- §5.3 的 `HardReset()` 執行步驟鏈包含「呼叫 `IStorageAdapter.clear()`」——這是一個 side effect，
-  違反 §14.2 鐵律 1（`src/core/` 嚴禁有副作用）。
-- **待答**：建議拆成兩塊：一個純函數 `computeHardResetState(): GameSaveData`（只回傳 `INITIAL_GAME_SAVE`，可 100% 單元測試），
-  加上一個外層非 core 的協調函數負責呼叫 `adapter.clear()` + `adapter.setItem()`。請確認這個拆分方式，或提出其他解法。
+### Q20.6 🟢 `HardReset()` 純函數拆分（2026-07-22 定案）
+- **決議**：拆成 `computeHardResetState()`（純函數，`src/core/progression/saveModel.ts`）+ `executeHardReset()`（I/O 協調函數，`src/adapters/`）。
+- **已回寫**：§5.3 第 3 小節新增兩個函數 signature。
 
-### Q20.7 🟡 `WebLocalStorageAdapter` 實體檔案該放哪一層，§13.5 內容與 §14.1 目錄結構對不上
-- §13.5 直接示範了會呼叫全局 `localStorage` 的 `WebLocalStorageAdapter` 類別，但沒有標註檔案路徑。
-- §14.1 目錄結構把它列在 `src/adapters/WebStorageAdapter.ts`（`src/core/storage/` 底下只放 `StorageAdapter.ts` 抽象介面與 `saveSchema.ts`）。
-- **待答**：確認 §13.5 的 `WebLocalStorageAdapter` 具體實作要放進 `src/adapters/`（不算進 `src/core/` 100% 覆蓋率要求），
-  避免有人依照 §13.5 的上下文誤放進 `src/core/storage/` 而違反鐵律 1。
+### Q20.7 🟢 `WebLocalStorageAdapter` 目錄歸屬（2026-07-22 定案）
+- **決議**：`IStorageAdapter`/`MemoryStorageAdapter` 留在 `src/core/storage/`；`WebLocalStorageAdapter` 移至 `src/adapters/`。
+- **已回寫**：§13.5 新增檔案歸屬說明與程式碼註解。
 
 ---
