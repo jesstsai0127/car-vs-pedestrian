@@ -229,9 +229,10 @@ text
   3. 戰前檢查機制 (PreGameCheck)：HP $< 50\%$ 修復扣款與金錢不足破產判斷。
   4. 駕駛與路人雙軌 `Profile` 隔離邏輯。
 * **TDD 驗收 Pass 條件 (Definition of Done)**：
-  * [ ] 狀態機測試：在非法狀態發送指令（如在 `VERDICT_POPUP` 發送 `ACCELERATE`）必須拋出異常或無效化。
-  * [ ] 存儲測試：模擬寫入、讀取與 `HardReset()`，斷言 `localStorage` 數據結構 $100\%$ 符合 Schema。
-  * [ ] 破產條件測試：斷言金錢不足且 HP $< 50\%$ 時，正確轉移至 `GAME_OVER_HARD_RESET` 狀態。
+  * [x] 狀態機測試：在非法狀態發送指令（如在 `VERDICT_POPUP` 發送 `ACCELERATE`）必須拋出異常或無效化（採用拋出 `InvalidStateTransitionError`）。
+  * [x] 存儲測試：模擬寫入、讀取與 `HardReset()`（`executeHardReset`），斷言資料結構 $100\%$ 符合 `GameSaveData` Schema。
+  * [x] 破產條件測試：`validatePreGameAccess` 斷言金錢不足且 HP $< 50$ 時 `triggerBankrupt=true`；`GameFSM` 獨立斷言 `TRIGGER_BANKRUPT` 動作正確轉移至 `GAME_OVER_HARD_RESET`（兩者尚未串成單一端到端整合測試，串接留待 MVP4 UI/Controller 層）。
+  * **實作狀態**：已完成並經 fresh-context subagent 驗收（見下方）。檔案：`src/core/engine/GameFSM.ts`、`src/core/progression/{preGameCheck,saveModel}.ts`、`src/core/storage/{StorageAdapter,saveSchema}.ts`、`src/adapters/executeHardReset.ts`，共 65 個測試（連同 MVP1）、`src/core/` 100% 覆蓋率。
 
 
 ---
