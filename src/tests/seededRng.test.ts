@@ -96,3 +96,28 @@ describe('SeededRNG: getState 狀態快照', () => {
     expect(r.getState()).toBe(4294967295);
   });
 });
+
+describe('SeededRNG: nextEntityId 決定性實體 id (§Q23.2)', () => {
+  it('相同 seed 產生完全相同的 id 序列（可重現）', () => {
+    const a = new SeededRNG(2026);
+    const b = new SeededRNG(2026);
+    for (let i = 0; i < 10; i++) {
+      expect(a.nextEntityId('cat')).toBe(b.nextEntityId('cat'));
+    }
+  });
+
+  it('格式為 prefix_6位小寫 hex', () => {
+    const r = new SeededRNG(1);
+    expect(r.nextEntityId('cat')).toMatch(/^cat_[0-9a-f]{6}$/);
+  });
+
+  it('預設 prefix 為 ent', () => {
+    const r = new SeededRNG(1);
+    expect(r.nextEntityId()).toMatch(/^ent_[0-9a-f]{6}$/);
+  });
+
+  it('連續呼叫產生不同 id（推進 rng 狀態）', () => {
+    const r = new SeededRNG(1);
+    expect(r.nextEntityId()).not.toBe(r.nextEntityId());
+  });
+});
