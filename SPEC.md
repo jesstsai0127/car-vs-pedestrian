@@ -668,24 +668,21 @@ export interface PreGameAccessInput {
 // 驗收輸出結果
 export interface PreGameAccessResult {
   canPass: boolean;               // 是否允許進入關卡
-  deductedMoney: number;          // 強制扣除的維修費用 (HP < 50 時觸發)
-  repairedHp: number;             // 修復後的 HP（若觸發修復，否則等於輸入 hp）
+  deductedMoney: number;          // 強制低空修復扣除的金額 (HP < 50 時，= (50 - hp) * repairCostPerHp)
+  repairedHp: number;             // 修復後的 HP（若觸發強制修復則為 50，否則等於輸入 hp）
   remainingMoney: number;         // 扣款後的剩餘金錢
-  triggerBankrupt: boolean;       // 是否觸發破產硬重置
+  triggerBankrupt: boolean;       // 是否因金錢不足以修至 50 HP 而觸發破產硬重置
   failedReason?: string;          // 驗收失敗說明
 }
 
 /**
- * 純函數：戰前門檻檢查與強修復邏輯
+ * 純函數：戰前門檻檢查與強修復邏輯（僅修復至 50 HP 低空門檻，非滿血 100）
  */
 export function validatePreGameAccess(input: PreGameAccessInput): PreGameAccessResult;
 
 
-> ⚠️ **待確認（未定案，暫不實作）**：本次定案文字中 `repairedHp` 註解寫「若觸發修復則為 100」，
-> 但本節流程圖與 Cost 公式（`Cost = (50 - HP) * repairCost`）從 v1 spec 起就一路定義成「強制修復至 **50**」，
-> 且 §16.2.2 已把「修復到 100%」劃給 `GarageScreen` 的另一個手動「全額修復」按鈕，兩者是不同機制。
-> `validatePreGameAccess` 觸發時 `repairedHp` 究竟該回 `50` 還是 `100`，請明確再定一次；
-> 在你回覆前，`collisionEngine` 以外的 `preGameCheck.ts` 實作會先照舊版「修復至 50」開工，不會自行假設成 100。
+> **2026-07-22 二次定案**：確認為文字誤植，`repairedHp` 觸發修復時固定為 **50**，與 §4.2 流程圖、Cost 公式一致。
+> 與 §16.2.2 `GarageScreen` 的手動「全額修復」（拉滿 100，Cost = `(100-hp)*repairCostPerHp`）是完全不同的兩套機制，互不影響。
 
 
 
@@ -3877,10 +3874,10 @@ json
 - **決議**：非法轉移一律拋出 `InvalidStateTransitionError`；提供 12 條合法轉移的完整矩陣。
 - **已回寫**：§4.3.2 新增轉移矩陣表與例外處理規則。
 
-### Q20.3 🟡 `PreGameCheck` 命名與型別（2026-07-22 部分定案，仍有一項待確認）
+### Q20.3 🟢 `PreGameCheck` 命名與型別（2026-07-22 定案，含二次校正）
 - **決議**：函數名稱統一為 `validatePreGameAccess`；`RepairCostConfig`/`PreGameAccessInput`/`PreGameAccessResult` 三個 interface 定案。
-- **已回寫**：§4.2 新增純函數介面 signature。
-- **⚠️ 仍待答**：新介面裡 `repairedHp` 註解寫「觸發修復則為 100」，但 §4.2 流程圖與 Cost 公式（`(50-HP)*repairCost`）、以及 §16.2.2 的手動全額修復（到 100%）都指向「強制修復只到 **50**」。這兩個數字哪個才對，需要你再確認一次；目前 SPEC.md 裡先保留舊版「修復至 50」的流程圖不動，沒有被新答案覆蓋。
+- **二次校正**：`repairedHp` 觸發時固定為 **50**（原答案「100」為文字誤植），與 `GarageScreen` 手動全額修復（100）是兩套不同機制。
+- **已回寫**：§4.2 純函數介面 signature 與二次定案註記。
 
 ### Q20.4 🟢 `WRONG_TURN` 是否對應獨立 FSM 狀態（2026-07-22 定案）
 - **決議**：不建立獨立狀態，維持在 `IN_GAME_RUNNING` 內部處理，不進入轉移矩陣。
