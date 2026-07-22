@@ -39,4 +39,14 @@ export class SeededRNG {
   getState(): number {
     return this.state;
   }
+
+  /**
+   * 決定性產生實體 id（§Q23.2）：取代 Math.random()，同 seed 序列可重現。
+   */
+  nextEntityId(prefix = 'ent'): string {
+    const randomHex = Math.floor(this.nextFloat() * 0xffffff)
+      .toString(16)
+      .padStart(6, '0');
+    return `${prefix}_${randomHex}`;
+  }
 }
