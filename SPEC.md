@@ -3939,33 +3939,37 @@ json
 
 # 第 22 章：MVP4 待釐清問題（UI 整合與 Playable Level 1）
 
-> 針對 MVP4 範疇（§11 輸入、§16 UI 流程、§17 Canvas）的第四輪缺口，掃描時 MVP1~MVP3 核心層已完成。
-> 狀態說明同第 19 章。**此輪為 review-only，尚未實作任何 MVP4 程式碼。**
+> 針對 MVP4 範疇（§11 輸入、§16 UI 流程、§17 Canvas）的第四輪缺口。狀態說明同第 19 章。
 
-### Q22.1 🔴 `InputCommand` 與 `FSMAction` 之間沒有橋接，且 `START_LEVEL_CHECK` 命名不一致
-- §11 定義的 `InputCommand`（`ACCELERATE_DOWN` / `BRAKE_DOWN` / `HORN_PRESS`…）是「關卡內驅動車輛物理」的指令；
-  §4.3.2 的 `FSMAction`（`START_LEVEL` / `CONFIRM_VERDICT` / `SELECT_ROLE`…）是「驅動畫面/大流程轉移」的指令。
-  兩套是完全不同的詞彙表，但**沒有任何地方定義 UI 按鈕/輸入如何轉成 `FSMAction`**。
-- 具體矛盾：§16.2.2 說「出擊鈕點擊觸發 `START_LEVEL_CHECK`」，但 §4.3.2 矩陣裡的動作叫 `START_LEVEL`——兩個名字。
-  推測 `START_LEVEL_CHECK` 是「先跑 `validatePreGameAccess`，通過後才 dispatch `START_LEVEL`」的複合流程，但沒寫明。
-- **待答**：(a) UI 按鈕 → `FSMAction` 的對照關係由誰負責（`GameController`？）；(b) `START_LEVEL_CHECK` 與 `START_LEVEL` 是同一件事還是兩步驟，請統一。
+### Q22.1 🟢 輸入網域二分 + 命名統一（2026-07-22 定案）
+- **決議**：§16.2.2 按鈕動作統一為 `START_LEVEL`；`FSMAction` 僅由 UI 點擊發射至 `GameFSM`，`InputCommand` 僅在 `IN_GAME_RUNNING` 時由 `InputAdapter` 派發至局內模擬器。
 
-### Q22.2 🔴 `GameController`（串接 FSM + PreGameCheck + Collision + resolveNextScreen 的黏合層）從未定義
-- §2.4.4 MVP4 DoD 要求「E2E 整合測試：標題 → 選角 → 關卡 → 碰撞 → 判決 → 結算完整主流程」，
-  這需要一個協調器把 `GameFSM`、`validatePreGameAccess`、`calculateCollision`、`resolveNextScreen`、`RandomEventManager`、`TickEngine` 串起來。
-- 但 §14.1 目錄結構裡**沒有 controller/app 模組**，全文也沒有這個黏合層的 signature 或職責定義。
-- **待答**：定義 `GameController`（或等價黏合層）的位置與介面。它是 MVP4 E2E 測試的主要受測對象，不定義就無法寫 DoD 要求的整合測試。
+### Q22.2 🟡 `GameController` 黏合層（2026-07-22 定案，但提供的程式碼與既有實作有 3 處衝突，見 Q22.5）
+- **決議**：於 `src/core/engine/GameController.ts` 建立 Headless Orchestrator。
+- **⚠️ 尚未實作**：定案提供的範例程式碼與 MVP1/MVP2 已驗收的既有程式有 3 處對不上，照抄會編譯失敗，須先修正（見 Q22.5）。
 
-### Q22.3 🟡 `resolveNextScreen` 的 `hasBankruptTriggered` 與 `fsmState==='GAME_OVER_HARD_RESET'` 雙重訊號冗餘
-- §16.3 `resolveNextScreen` 第一個判斷是 `if (hasBankruptTriggered || fsmState === 'GAME_OVER_HARD_RESET')`。
-  這兩個訊號指向同一件事（破產）。若 `hasBankruptTriggered=true` 但 `fsmState` 不是 `GAME_OVER_HARD_RESET`，
-  代表 UI 與 FSM 狀態不同步，是潛在 bug 來源（兩個 source of truth）。
-- **待答**：是否移除 `hasBankruptTriggered`、純粹以 `fsmState` 為單一真相來源？（`resolveNextScreen` 本身是純函數、可立即實作+測試,只等這個介面決定。）
+### Q22.3 🟢 `resolveNextScreen` 砍掉 `hasBankruptTriggered`（2026-07-22 定案）
+- **決議**：以 `fsmState === 'GAME_OVER_HARD_RESET'` 為破產唯一真相來源（SSOT），移除 `hasBankruptTriggered`。
+- **已實作**：`src/core/engine/screenResolver.ts`（見 Q22.6 目錄決策）+ 8 個測試。
 
-### Q22.4 🟡 物理/導航純函數已建好，但「AI 路人碰瓷 timing」與「路人 `PEDESTRIAN_JUMP` → entryTick 紀錄」的驅動邏輯未定義
-- MVP1~MVP3 已把 `calculateCollision`、`updateVehiclePhysics`、`checkAABBCollision`、`processTurnError` 等純函數建齊，
-  但「AI 路人依 `aiAggressionRatio` 決定何時跳出」「玩家按 `PEDESTRIAN_JUMP` 後如何推進路人 Y 軸位移並記錄 `entryLaneTick`」
-  這類把純函數串成一局遊戲的 orchestration 邏輯，散落在 §2.2、§9.4、§15.3 但沒有集中的可測規格。
-- **待答**：這部分是否併入 Q22.2 的 `GameController` 一起定義？還是獨立一個 `LevelSimulator` 純函數層（吃 input + tick，吐新的 runtime state）？後者比較能維持 TDD。
+### Q22.4 🟢 採納 `LevelSimulator` 局內模擬器（2026-07-22 定案）
+- **決議**：於 `src/core/engine/LevelSimulator.ts` 集中 `entryTick` 記錄、位移與 AABB 檢測。
+- **⚠️ 尚未實作**：定案提供的 `LevelSimulator` 骨架只有 `triggerPedestrianJump`/`getEntryTick`/`reset`，尚缺「吃 input+tick 吐新 runtime state」的推進主體與 AABB 串接，屬骨架非完整規格，待 Q22.5 一併釐清後實作。
+
+---
+
+## MVP4 開工前的實作衝突（Q22.5~Q22.6）——照抄定案程式碼會壞掉，須先對齊
+
+### Q22.5 🔴 定案的 `GameController` 範例程式碼與既有已驗收程式有 3 處不相容
+1. **FSM 方法名**：範例呼叫 `this.fsm.transition('START_LEVEL')`，但既有 `GameFSM`（已驗收）的方法叫 **`dispatch()`**，沒有 `transition()`。→ 請統一：改範例用 `dispatch`，或替 `GameFSM` 增設 `transition` 別名。建議前者。
+2. **碰撞回傳型別名**：範例 import `CalculateCollisionResult`，但既有 `collisionEngine.ts` 匯出的是 **`CalculateCollisionOutput`**（已驗收、已被 §3.5 與測試使用）。→ 請統一沿用 `CalculateCollisionOutput`。
+3. **`handleCollision` 流程順序**：範例先 `dispatch('COLLISION_OCCURRED')`（→ `IN_GAME_PAUSED_ACCIDENT`）再直接 `dispatch('SHOW_VERDICT')`（→ `VERDICT_POPUP`），中間沒有停留讓「物理凍結 50ms」發生。若這是刻意的同步簡化可接受，但請確認 `handleCollision` 是否本就該一次跨兩個狀態，還是 `SHOW_VERDICT` 應由 TickEngine 在凍結結束後才觸發。
+- **待答**：確認上述 3 點的修正方式，我再實作 `GameController`。
+
+### Q22.6 🟡 `resolveNextScreen` / `screenResolver.ts` 目錄歸屬與 §14.2 鐵律 1 衝突
+- 定案文字建議放 `src/ui/screenResolver.ts`，但 Q22.2 的 `GameController`（位於 `src/core/engine/`）會 import 它。
+  若放 `src/ui/`，會造成 **`src/core/` 反向依賴 `src/ui/`**，違反 §14.2 鐵律 1（core 必須框架/平台無關）。
+- **Claude 已先行處置**：`resolveNextScreen` 是零框架依賴的純函數，暫置於 `src/core/engine/screenResolver.ts`，維持依賴方向正確並納入 100% 覆蓋率。
+- **待答**：確認維持在 `src/core/engine/`（建議），或你要求放 `src/ui/` 並改用其他方式讓 `GameController` 不直接依賴它（例如把畫面解析結果由外層注入）。
 
 ---
