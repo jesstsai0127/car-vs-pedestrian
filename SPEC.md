@@ -3987,16 +3987,20 @@ json
   `src/core/events/RandomEventManager.ts`（觸發/去重/合併乘數/到期）+ 13 個測試（含 90t 到期、乘數疊加、可重現性）。
 - **註記**：貓咪的「實體生成」目前 `ActiveEventEffect` 無 spawn 欄位表達，僅以 `remainingTicks` 標記存活期，實體由上層 runtime 依 `triggeredEventIds` 生成——若之後要在 core 表達 spawn，需再加 `spawnDescriptors`（延伸模組 EX-A1 相關）。
 
-### Q23.1 🔴 `validateAndMigrateSaveData`（§13.4）在 `src/core/storage/` 內用 `Date.now()`，違反 §14.2 鐵律 1
-> ⚠️ **2026-07-23**：定案訊息標題含 Q23.1/Q23.2，但內文只送到 Q21.8 就結束，這兩題的定案內容**尚未收到**，維持待答。
-- §13.4 的 `validateAndMigrateSaveData` 兩處用 `Date.now()`（缺 `lastSavedTimestamp` 時填入），
-  但此函數依 §14.1 屬 `src/core/storage/`，鐵律 1 明文禁止 core 呼叫 `Date.now()`（會破壞可重現測試）。
-- **建議**：改為注入參數 `validateAndMigrateSaveData(rawData: unknown, nowMs: number)`，由呼叫端（adapters 層）傳入時間戳。與 Q20.6 `HardReset` 的拆法一致。請確認。
+### Q23.1 🟢 `validateAndMigrateSaveData` 注入時間戳（2026-07-23 定案，實作待驗收 subagent 完成後進行）
+- **決議**：改為 `validateAndMigrateSaveData(rawData: unknown, currentTimestamp: number): GameSaveData`，
+  由呼叫端注入時間戳，達成 core 無副作用。放 `src/core/progression/saveModel.ts`。
+- **狀態**：定案已收到；為避免打斷正在跑覆蓋率驗收的 subagent，實作排在其回報之後。
 
-### Q23.2 🟡 `StrayCatEntity` / `OilSpillEntity`（§6.3.2）用 `Math.random()` 產生 id，違反鐵律 1 與可重現性
-- §6.3.2 兩個 `IGameEntity` 實作用 `id = 'stray_cat_' + Math.random()`，若歸屬 core 會違反鐵律 1，
-  且不可重現（同 seed 測試會拿到不同 id）。
-- **建議**：id 由外部注入（建構子參數）或用 `SeededRNG`/遞增序號產生。請確認 id 生成策略。
+### Q23.2 🟢 實體 id 用 `SeededRNG.nextEntityId` 決定性產生（2026-07-23 定案，實作待驗收後）
+- **決議**：`SeededRNG` 新增 `nextEntityId(prefix='ent'): string`，用 `nextFloat` 產生決定性 hex id，取代 `Math.random()`。
+- **狀態**：同上，實作排在驗收 subagent 回報之後（避免瞬間覆蓋率不足害它誤判）。
+
+### Q24.1 🔴 Part 3 玩法手冊 §1 與 §3 自相矛盾（2026-07-23 review 發現）
+- Part 3 §1：`58~62 ticks = 灰色地帶（隨機判決）`。
+- Part 3 §3：路人應「將 T_diff 控制在 `58~62 ticks` 獲取**最大**法庭賠償金」。
+- **矛盾**：灰色地帶是隨機（期望 Fault≈0.5，擲硬幣），並非最大賠償。要駕駛全責（Fault=1.0、最大賠償）必須 `T_diff > 62 ticks`（§3.3）。
+- **處置**：以 §3.3 與 Part 3 §1 為準（>62 才駕駛全責）；README/§2.2.3 已是正確版，**不採納 §3 的錯誤指引**。請確認 Part 3 §3 應更正為「> 62 ticks」。
 
 ### Q23.3 🟢 以下純函數規格完整、無歧義，隨時可依既有 TDD 流程實作（非缺口，待你點頭即開工）
 - §6.4 `generateLevelConfig(levelId)`、`validateLevelAccess(role, money, config)`（難度遞增數值模型 §6.2 已含 aiBrakeFailureProbability 修正）
