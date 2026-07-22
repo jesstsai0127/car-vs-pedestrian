@@ -3966,10 +3966,43 @@ json
 3. **`handleCollision` 流程順序**：範例先 `dispatch('COLLISION_OCCURRED')`（→ `IN_GAME_PAUSED_ACCIDENT`）再直接 `dispatch('SHOW_VERDICT')`（→ `VERDICT_POPUP`），中間沒有停留讓「物理凍結 50ms」發生。若這是刻意的同步簡化可接受，但請確認 `handleCollision` 是否本就該一次跨兩個狀態，還是 `SHOW_VERDICT` 應由 TickEngine 在凍結結束後才觸發。
 - **待答**：確認上述 3 點的修正方式，我再實作 `GameController`。
 
-### Q22.6 🟡 `resolveNextScreen` / `screenResolver.ts` 目錄歸屬與 §14.2 鐵律 1 衝突
-- 定案文字建議放 `src/ui/screenResolver.ts`，但 Q22.2 的 `GameController`（位於 `src/core/engine/`）會 import 它。
-  若放 `src/ui/`，會造成 **`src/core/` 反向依賴 `src/ui/`**，違反 §14.2 鐵律 1（core 必須框架/平台無關）。
-- **Claude 已先行處置**：`resolveNextScreen` 是零框架依賴的純函數，暫置於 `src/core/engine/screenResolver.ts`，維持依賴方向正確並納入 100% 覆蓋率。
-- **待答**：確認維持在 `src/core/engine/`（建議），或你要求放 `src/ui/` 並改用其他方式讓 `GameController` 不直接依賴它（例如把畫面解析結果由外層注入）。
+### Q22.5 🟢 已定案並修正（2026-07-22）
+- `dispatch()`、`CalculateCollisionOutput` 命名對齊；`handleCollision` 只 `dispatch('COLLISION_OCCURRED')`，
+  `SHOW_VERDICT` 由 TickEngine 物理凍結（50ms/3 Ticks）後非同步觸發。
+- **已實作**：`src/core/engine/GameController.ts` + 11 個測試（含 E2E 主流程）。
+
+### Q22.6 🟢 已定案（2026-07-22）：`screenResolver.ts` 維持 `src/core/engine/`
+- 採納 Claude 建議，保持 core 不反向依賴 ui。已實作於 `src/core/engine/screenResolver.ts`。
+
+---
+
+# 第 23 章：全域 spec 掃描發現（第五輪，非 MVP 特定）
+
+> 掃描 §6、§7、§13、§15、§17 尚未實作的純函數區塊後的發現。狀態說明同第 19 章。
+
+### Q21.8 🔴 [延續 MVP3] 新版 `IRandomEvent` 丟失 `durationTicks` 與 effect 回傳，`RandomEventManager` 本體仍無法完成
+- Q21.5/Q21.6 定案的新 `IRandomEvent` 是 `{ id, name, getProbability, canTrigger, onTrigger }`，
+  `onTrigger` 回傳 `void`、且**沒有 `durationTicks` 欄位**。
+- 但 §8.3.2/§8.3.3 明確要求貓咪持續 120 Ticks、煞車失靈持續 90 Ticks，且失靈期間 `brakeMultiplier = 0.0`。
+  新介面**無法表達「事件持續多久」與「事件對物理施加什麼效果」**——舊 §8.4 的 `EventEffect` + `durationTicks` + `onStart/onTick/onEnd` 機制被整組拿掉了。
+- **現況**：事件定義（`getProbability`/`canTrigger`）已可實作並測試（已完成），但 Manager 若只有觸發+去重、沒有到期與效果套用，會是「觸發後永不失效、且效果無處施加」的半成品，故暫不實作。
+- **待答**：`IRandomEvent` 是否補回 `durationTicks: number` 與一個效果模型（例如 `onTrigger` 改回傳 `EventEffect { brakeMultiplier, pedestrianFrozen, spawnDescriptors }`）？Manager 才能正確管理生命週期與效果疊加。
+
+### Q23.1 🔴 `validateAndMigrateSaveData`（§13.4）在 `src/core/storage/` 內用 `Date.now()`，違反 §14.2 鐵律 1
+- §13.4 的 `validateAndMigrateSaveData` 兩處用 `Date.now()`（缺 `lastSavedTimestamp` 時填入），
+  但此函數依 §14.1 屬 `src/core/storage/`，鐵律 1 明文禁止 core 呼叫 `Date.now()`（會破壞可重現測試）。
+- **建議**：改為注入參數 `validateAndMigrateSaveData(rawData: unknown, nowMs: number)`，由呼叫端（adapters 層）傳入時間戳。與 Q20.6 `HardReset` 的拆法一致。請確認。
+
+### Q23.2 🟡 `StrayCatEntity` / `OilSpillEntity`（§6.3.2）用 `Math.random()` 產生 id，違反鐵律 1 與可重現性
+- §6.3.2 兩個 `IGameEntity` 實作用 `id = 'stray_cat_' + Math.random()`，若歸屬 core 會違反鐵律 1，
+  且不可重現（同 seed 測試會拿到不同 id）。
+- **建議**：id 由外部注入（建構子參數）或用 `SeededRNG`/遞增序號產生。請確認 id 生成策略。
+
+### Q23.3 🟢 以下純函數規格完整、無歧義，隨時可依既有 TDD 流程實作（非缺口，待你點頭即開工）
+- §6.4 `generateLevelConfig(levelId)`、`validateLevelAccess(role, money, config)`（難度遞增數值模型 §6.2 已含 aiBrakeFailureProbability 修正）
+- §7.4 `calculateScreenShakeOffset(state, rngValue)`（RNG 由外注入，純函數）
+- §15.5 `sanitizeVehicleConfig(raw)`、`clampEntityStat(value, min, max)`
+- §5.4 `calculateUpgradeCost(level, baseCost)`、`processStatUpgrade(request)`（養成升級費用，指數曲線）
+- §17.1 letterbox 縮放/座標映射、§17.3 相機 Lerp——屬渲染層數學，可放 core 或 ui，待目錄決策
 
 ---
