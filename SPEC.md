@@ -3897,3 +3897,36 @@ json
 - **已回寫**：§13.5 新增檔案歸屬說明與程式碼註解。
 
 ---
+
+# 第 21 章：MVP3 待釐清問題（Tick Engine & Random Events）
+
+> 針對 MVP3 範疇（§8、§9、§10）的第三輪缺口。狀態說明同第 19 章。
+> **開工策略**：SeededRNG（§8.1）與導航純函數（§10.4）規格完整無歧義，已先行實作；
+> `RandomEventManager` 三事件因下列缺口暫緩，等回覆後再動工。
+
+### Q21.1 🔴 `GameContext` 缺 `isBraking` 欄位，`BRAKE_FAILURE_EVENT` 的 canTrigger 無從判斷
+- §8.3.3 `BRAKE_FAILURE_EVENT` 觸發條件是「駕駛玩家正踩下煞車鍵 (`isBraking === true`)」，
+  但 §8.3.1 `GameContext` 只有 `isHornPressed`，**沒有 `isBraking` 欄位**。
+- **待答**：`GameContext` 是否新增 `isBraking: boolean`？（建議加，否則此事件的 `canTrigger` 寫不出來。）
+
+### Q21.2 🔴 `HORN_STUN_EFFECT`（100% 主動觸發）如何套進機率式 `processRandomEvents`
+- §8.3.4 說喇叭定身是「條件滿足時 100% 主動觸發（非被動機率事件）」，
+  但 §8.4 `processRandomEvents` 對所有註冊事件一律用 `rng.nextBool(baseProbabilityPerSecond / 60)` 判定。
+  一個 100% 主動事件塞進這個機率迴圈會有矛盾：要讓 `p_tick >= 1.0`，`baseProbabilityPerSecond` 得 `>= 60`，
+  但該欄位註解寫的是 `0.0 ~ 1.0`。
+- **待答**：主動觸發型事件（喇叭定身）是否走跟機率型事件完全不同的路徑（例如由玩家輸入指令直接觸發、根本不進 `processRandomEvents` 的機率抽樣迴圈）？
+  還是 `canTrigger` 回 true 時就強制觸發、跳過 `nextBool`？請定義主動事件的統一處理規則。
+
+### Q21.3 🟡 「畫面中無其它貓咪實體」由 canTrigger 還是 Manager 的去重負責
+- §8.3.2 `STRAY_CAT_CROSSING` 的 `canTrigger` 需求包含「且畫面中無其它貓咪實體」，
+  但 `GameContext` 沒有「目前存在哪些實體/哪些事件正在執行」的欄位。
+- §8.4 `processRandomEvents` 已有 `isAlreadyActive`（同 `eventId` 執行中就不重複觸發）的去重機制。
+- **待答**：「無其它貓咪」這個條件是否就由 Manager 的 `isAlreadyActive` 去重涵蓋（那 `canTrigger` 內就不用、也無法檢查實體）？
+  還是 `GameContext` 要新增一個「當前實體清單」欄位讓 `canTrigger` 自行判斷？建議前者（靠 Manager 去重），請確認。
+
+### Q21.4 🟡 `TickEngine` 核心可測介面未定義
+- §9.1.1 只提到「單元測試可直接呼叫 `tickEngine.step(1)` 前進 1 Tick」與 render loop 的 accumulator 模式，
+  但沒有給出 `TickEngine` 的正式 class/interface signature（`step()` 回傳什麼？內部維護什麼狀態？是否負責呼叫 `processRandomEvents`/物理更新，還是只是一個 tick 計數器？）。
+- **待答**：`TickEngine` 在 `src/core/` 裡的職責邊界與 signature。建議先定義成「純計數 + 委派」：`step(n)` 推進 tick 數並回傳當前 tick，不直接耦合物理/事件（由呼叫端組裝），符合 §14.2 無副作用原則。請確認或給出你要的 signature。
+
+---
