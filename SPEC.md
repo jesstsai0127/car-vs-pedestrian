@@ -3987,20 +3987,15 @@ json
   `src/core/events/RandomEventManager.ts`（觸發/去重/合併乘數/到期）+ 13 個測試（含 90t 到期、乘數疊加、可重現性）。
 - **註記**：貓咪的「實體生成」目前 `ActiveEventEffect` 無 spawn 欄位表達，僅以 `remainingTicks` 標記存活期，實體由上層 runtime 依 `triggeredEventIds` 生成——若之後要在 core 表達 spawn，需再加 `spawnDescriptors`（延伸模組 EX-A1 相關）。
 
-### Q23.1 🟢 `validateAndMigrateSaveData` 注入時間戳（2026-07-23 定案，實作待驗收 subagent 完成後進行）
-- **決議**：改為 `validateAndMigrateSaveData(rawData: unknown, currentTimestamp: number): GameSaveData`，
-  由呼叫端注入時間戳，達成 core 無副作用。放 `src/core/progression/saveModel.ts`。
-- **狀態**：定案已收到；為避免打斷正在跑覆蓋率驗收的 subagent，實作排在其回報之後。
+### Q23.1 🟢 `validateAndMigrateSaveData` 注入時間戳（2026-07-23 定案並實作）
+- **決議/已實作**：`validateAndMigrateSaveData(rawData, currentTimestamp)`，`src/core/progression/saveModel.ts`，core 無 `Date.now()`。+ 11 個測試。
 
-### Q23.2 🟢 實體 id 用 `SeededRNG.nextEntityId` 決定性產生（2026-07-23 定案，實作待驗收後）
-- **決議**：`SeededRNG` 新增 `nextEntityId(prefix='ent'): string`，用 `nextFloat` 產生決定性 hex id，取代 `Math.random()`。
-- **狀態**：同上，實作排在驗收 subagent 回報之後（避免瞬間覆蓋率不足害它誤判）。
+### Q23.2 🟢 `SeededRNG.nextEntityId` 決定性實體 id（2026-07-23 定案並實作）
+- **決議/已實作**：`nextEntityId(prefix='ent')` 用 `nextFloat` 產生決定性 hex id，取代 `Math.random()`。+ 4 個測試。
 
-### Q24.1 🔴 Part 3 玩法手冊 §1 與 §3 自相矛盾（2026-07-23 review 發現）
-- Part 3 §1：`58~62 ticks = 灰色地帶（隨機判決）`。
-- Part 3 §3：路人應「將 T_diff 控制在 `58~62 ticks` 獲取**最大**法庭賠償金」。
-- **矛盾**：灰色地帶是隨機（期望 Fault≈0.5，擲硬幣），並非最大賠償。要駕駛全責（Fault=1.0、最大賠償）必須 `T_diff > 62 ticks`（§3.3）。
-- **處置**：以 §3.3 與 Part 3 §1 為準（>62 才駕駛全責）；README/§2.2.3 已是正確版，**不採納 §3 的錯誤指引**。請確認 Part 3 §3 應更正為「> 62 ticks」。
+### Q24.1 🟢 Part 3 玩法手冊矛盾（2026-07-23 已由使用者勘誤）
+- **決議**：Part 3 §3 更正為「黃金碰瓷點 = T_diff > 62 ticks（瞄準 63~68 ticks，兼顧駕駛全責與高衝擊能量）」。
+- README/§2.2.3 本即正確版，無需再改；玩法手冊以 §3.3 為準。
 
 ### Q23.3 🟢 以下純函數規格完整、無歧義，隨時可依既有 TDD 流程實作（非缺口，待你點頭即開工）
 - §6.4 `generateLevelConfig(levelId)`、`validateLevelAccess(role, money, config)`（難度遞增數值模型 §6.2 已含 aiBrakeFailureProbability 修正）
