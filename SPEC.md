@@ -3980,15 +3980,15 @@ json
 
 > 掃描 §6、§7、§13、§15、§17 尚未實作的純函數區塊後的發現。狀態說明同第 19 章。
 
-### Q21.8 🔴 [延續 MVP3] 新版 `IRandomEvent` 丟失 `durationTicks` 與 effect 回傳，`RandomEventManager` 本體仍無法完成
-- Q21.5/Q21.6 定案的新 `IRandomEvent` 是 `{ id, name, getProbability, canTrigger, onTrigger }`，
-  `onTrigger` 回傳 `void`、且**沒有 `durationTicks` 欄位**。
-- 但 §8.3.2/§8.3.3 明確要求貓咪持續 120 Ticks、煞車失靈持續 90 Ticks，且失靈期間 `brakeMultiplier = 0.0`。
-  新介面**無法表達「事件持續多久」與「事件對物理施加什麼效果」**——舊 §8.4 的 `EventEffect` + `durationTicks` + `onStart/onTick/onEnd` 機制被整組拿掉了。
-- **現況**：事件定義（`getProbability`/`canTrigger`）已可實作並測試（已完成），但 Manager 若只有觸發+去重、沒有到期與效果套用，會是「觸發後永不失效、且效果無處施加」的半成品，故暫不實作。
-- **待答**：`IRandomEvent` 是否補回 `durationTicks: number` 與一個效果模型（例如 `onTrigger` 改回傳 `EventEffect { brakeMultiplier, pedestrianFrozen, spawnDescriptors }`）？Manager 才能正確管理生命週期與效果疊加。
+### Q21.8 🟢 `IRandomEvent` 效果模型與 `durationTicks` 補齊（2026-07-23 定案）
+- **決議**：`IRandomEvent` 補回 `durationTicks?`；新增 `ActiveEventEffect { eventId, remainingTicks, brakeMultiplier?, speedMultiplier? }`；
+  `onTrigger` 回傳 `ActiveEventEffect | void`；`RandomEventManager` 維護 `activeEffects[]`，每 Tick 遞減 `remainingTicks`、到期自動清除。
+- **已實作**：`src/core/events/randomEvents.ts`（貓咪 120t、煞車失靈 90t+brakeMultiplier 0）、
+  `src/core/events/RandomEventManager.ts`（觸發/去重/合併乘數/到期）+ 13 個測試（含 90t 到期、乘數疊加、可重現性）。
+- **註記**：貓咪的「實體生成」目前 `ActiveEventEffect` 無 spawn 欄位表達，僅以 `remainingTicks` 標記存活期，實體由上層 runtime 依 `triggeredEventIds` 生成——若之後要在 core 表達 spawn，需再加 `spawnDescriptors`（延伸模組 EX-A1 相關）。
 
 ### Q23.1 🔴 `validateAndMigrateSaveData`（§13.4）在 `src/core/storage/` 內用 `Date.now()`，違反 §14.2 鐵律 1
+> ⚠️ **2026-07-23**：定案訊息標題含 Q23.1/Q23.2，但內文只送到 Q21.8 就結束，這兩題的定案內容**尚未收到**，維持待答。
 - §13.4 的 `validateAndMigrateSaveData` 兩處用 `Date.now()`（缺 `lastSavedTimestamp` 時填入），
   但此函數依 §14.1 屬 `src/core/storage/`，鐵律 1 明文禁止 core 呼叫 `Date.now()`（會破壞可重現測試）。
 - **建議**：改為注入參數 `validateAndMigrateSaveData(rawData: unknown, nowMs: number)`，由呼叫端（adapters 層）傳入時間戳。與 Q20.6 `HardReset` 的拆法一致。請確認。
