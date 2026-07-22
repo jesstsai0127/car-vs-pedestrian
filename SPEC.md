@@ -2337,7 +2337,7 @@ class MockInputAdapter implements IInputAdapter {
 * **系統預期行為**：$\text{HP} \ge 50$ 門檻包含 $50$。驗收直接通過 (Pass)，無需扣除金錢修復即可進入關卡。
 * **TDD 斷言規格**：
   typescript
-  const check = validatePreGameAccess({ hp: 50, money: 0 }, repairCostConfig);
+  const check = validatePreGameAccess({ role: 'DRIVER', hp: 50, money: 0, repairConfig: repairCostConfig });
   expect(check.canPass).toBe(true);
   expect(check.deductedMoney).toBe(0);
   
@@ -2347,7 +2347,7 @@ class MockInputAdapter implements IInputAdapter {
 * **系統預期行為**：無法通過戰前檢查，且金錢不足以補充至 $50$，立即觸發 `BANKRUPT_RESET` 破產重置流程。
 * **TDD 斷言規格**：
   typescript
-  const check = validatePreGameAccess({ hp: 49, money: 0 }, repairCostConfig);
+  const check = validatePreGameAccess({ role: 'DRIVER', hp: 49, money: 0, repairConfig: repairCostConfig });
   expect(check.canPass).toBe(false);
   expect(check.triggerBankrupt).toBe(true);
   
