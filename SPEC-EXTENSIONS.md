@@ -230,3 +230,43 @@ export interface LeaderboardEntry {
 5. **🟡 `ReplayHeader.initialSeed` 重播決定論**：重播只存輸入+seed 要能 100% 還原，前提是**所有**隨機（含 AI 路人 timing、隨機事件）都走同一個 `SeededRNG` 且消耗順序固定——這對 MVP3 尚未完成的 `RandomEventManager` 生命週期（Q21.8）是硬前提。
 
 6. **🟡 `generateShareableReplayLink` 用 `btoa`**：`btoa` 是瀏覽器 API，若此函數放 `src/core/` 會違反 §14.2 鐵律 1（core 不得依賴平台 API）。應歸 `src/adapters/` 或改用平台無關的 base64。
+
+---
+
+## 延伸模組 TDD 可行性 review（2026-07-23，逐模組挖開工缺口）
+
+> 上節 6 條是「與 MVP 既有實作衝突」；本節是「就算沒有衝突，這規格本身能不能直接寫測試開工」的缺口。
+> 狀態：🔴 擋開工　🟡 需補但不擋　🟢 可直接實作。
+
+### 模組 A（擴充事件）
+- **EX-A1 🔴 [繼承 Q21.8]**：三個新事件的 `onTrigger` 效果（油污「煞車降 50%、轉向阻力歸零」、鬼切「橫向急轉」、野狗「車輛偏移」）與**持續時間**都無法用現行 `IRandomEvent`（無 `durationTicks`、`onTrigger` 回 void）表達。與貓咪/煞車失靈同一個 blocker。
+- **EX-A2 🟡 `REGISTERED_EVENTS` 註冊表未定義**：A 節說「註冊至 `REGISTERED_EVENTS` 陣列」，但這個陣列/註冊機制全規格從未定義位置與型別。需先定 `RandomEventManager` 如何吃這個清單。
+- **EX-A3 🟡 新手保護不一致**：`OIL_SPILL` 有 `currentLevelId >= 2` 閘門且機率 `0.02*(N-1)`（Level 1 為 0）；但 `ELDERLY_SCOOTER`（`0.015*N`）與 `DOG_DASH`（`0.01*N`）在 Level 1 機率非零、且 `canTrigger` 無關卡閘門，Level 1 就會觸發。是刻意讓這兩個新手就遇到，還是漏了 `>=2` 閘門？請確認。
+
+### 模組 B（車輛/衝擊）
+- **EX-B1 🔴 `W_driver`（駕駛體重）是全新輸入，來源未定義**：動能公式 $\tfrac12(W_{vehicle}+W_{driver})v^2$ 引入 `W_driver`，但 `DriverProfile`/`VehicleConfig` 都沒有這個欄位。定值？可養成？未定就算不出 E。
+- **EX-B2 🔴 `pleaBonus` 未定義**：辯解修飾公式 `... - pleaBonus` 減去一個 `pleaBonus`，但它是什麼、範圍、來源全無定義。
+- **EX-B3 🟡 新 `VehicleConfig` 丟了 `maxDurability`**：`Cost_repair = (100-HP)*price` 假設血量上限恆 100，但既有 §15.2 車輛有 `maxDurability`（卡車 150）。新表拿掉了，HP 上限到底 100 還是各車不同？
+
+### 模組 C（新角色/模式）
+- **EX-C1 🔴 `DeliveryStateType` 未接入 `GameFSM` 轉移矩陣**：外送三狀態是獨立 type，但 `GameFSM`（§4.3）只認識 8 個 `GameStateType` 且轉移矩陣寫死。外送狀態如何進出主 FSM、有哪些合法轉移，完全沒定義。
+- **EX-C2 🔴 交通法官的 `Fault_truth` 取得方式未定義**：小遊戲要對比 `calculateCollision` 的真相值，但 `calculateCollision` 需要完整 `CalculateCollisionInput`（車速/車重/角度/ticks/辯解等級），而 `ReplayHeader` 只存了 seed/vehicleId/levelId/輸入序列——**沒有直接存這些判決輸入**。是要從輸入序列「重跑模擬」還原，還是 `ReplayHeader` 要加存碰撞輸入快照？這決定 replay 引擎的資料量。
+- **EX-C3 🟡 外送 `Damage_rider` 依賴哪個 E_impact 未定**：`floor(E_impact/100)*2`——用 MVP1 的 `V×W×A` 還是模組 B 的 `½mv²`？兩者量級差極大（後者可能上千），傷害會天差地遠。
+- **EX-C4 🟡 外送 `routeDistance` / 訂單設定來源未定義**：`TargetTicks` 公式吃 `routeDistance` 與 `maxSpeedKmh`，但外送關卡/訂單的設定檔結構沒定義。
+
+### 模組 D（ReplayEngine）
+- **EX-D1 🔴 [繼承衝突#5]** 決定論還原的前提（單一 RNG、固定消耗順序）在 MVP3 `RandomEventManager`（Q21.8）落地前無法保證，重播會對不上。
+- **EX-D2 🟡 `startTick` 與環形緩衝一致性**：`ReplayBuffer` 只留最後 300 frame（`shift`），但 `ReplayHeader.startTick` 需正確等於緩衝內最舊 frame 的 tick，兩者同步規則要寫清楚，否則 `simulateReplayFrame` 依 tick `find` 會找不到。
+
+### 模組 E（動態難度 DDS）
+- **EX-E1 🟢 `generateDynamicLevelConfig` 本身是乾淨純函數，可直接 TDD 實作**——這是延伸模組裡唯一無歧義、可立即開工的。
+- **EX-E2 🔴 與 §6.4 `generateLevelConfig` 直接衝突**：兩個關卡生成器公式全不同（距離 `500+200N` vs `200+50N`、轉彎數公式不同、欄位名不同）。同一個遊戲不能有兩套關卡數值來源，必須擇一或明確分工（例如 DDS 取代舊版）。
+
+### 模組 F（社群/Meta）
+- **EX-F1 🟡 `btoa` 對非 Latin1 會拋錯**：`playerName` 未來含中文時 `btoa(JSON.stringify(...))` 直接 throw。需先 UTF-8 encode 再 base64（或用平台無關實作）。合併衝突#6一起處理。
+- **EX-F2 🟢 `LeaderboardEntry` 為純資料結構，可直接定義**；但排行榜的讀寫需後端/雲端 storage，屬 `src/core/` 之外，且 `shareableUrl` 目前是 `game.example.com` 佔位網域，上線前要換真實網域。
+
+### 小結
+- **可立即開工（無歧義）**：模組 E 的 `generateDynamicLevelConfig`（但需先解 EX-E2 與 §6.4 的衝突）、模組 F 的 `LeaderboardEntry` 型別。
+- **全部卡在同一個根**：模組 A/D、以及 C 的傷害計算，都繫於 MVP3 未決的 **Q21.8（事件效果/持續時間模型）**——這是延伸模組的最大前置。
+- **需要新資料定義才能動**：`W_driver`、`pleaBonus`、外送訂單設定、`DeliveryStateType` 接入 FSM、`ReplayHeader` 是否存判決輸入。
