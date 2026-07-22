@@ -3930,3 +3930,36 @@ json
 - **待答**：`TickEngine` 在 `src/core/` 裡的職責邊界與 signature。建議先定義成「純計數 + 委派」：`step(n)` 推進 tick 數並回傳當前 tick，不直接耦合物理/事件（由呼叫端組裝），符合 §14.2 無副作用原則。請確認或給出你要的 signature。
 
 ---
+
+# 第 22 章：MVP4 待釐清問題（UI 整合與 Playable Level 1）
+
+> 針對 MVP4 範疇（§11 輸入、§16 UI 流程、§17 Canvas）的第四輪缺口，掃描時 MVP1~MVP3 核心層已完成。
+> 狀態說明同第 19 章。**此輪為 review-only，尚未實作任何 MVP4 程式碼。**
+
+### Q22.1 🔴 `InputCommand` 與 `FSMAction` 之間沒有橋接，且 `START_LEVEL_CHECK` 命名不一致
+- §11 定義的 `InputCommand`（`ACCELERATE_DOWN` / `BRAKE_DOWN` / `HORN_PRESS`…）是「關卡內驅動車輛物理」的指令；
+  §4.3.2 的 `FSMAction`（`START_LEVEL` / `CONFIRM_VERDICT` / `SELECT_ROLE`…）是「驅動畫面/大流程轉移」的指令。
+  兩套是完全不同的詞彙表，但**沒有任何地方定義 UI 按鈕/輸入如何轉成 `FSMAction`**。
+- 具體矛盾：§16.2.2 說「出擊鈕點擊觸發 `START_LEVEL_CHECK`」，但 §4.3.2 矩陣裡的動作叫 `START_LEVEL`——兩個名字。
+  推測 `START_LEVEL_CHECK` 是「先跑 `validatePreGameAccess`，通過後才 dispatch `START_LEVEL`」的複合流程，但沒寫明。
+- **待答**：(a) UI 按鈕 → `FSMAction` 的對照關係由誰負責（`GameController`？）；(b) `START_LEVEL_CHECK` 與 `START_LEVEL` 是同一件事還是兩步驟，請統一。
+
+### Q22.2 🔴 `GameController`（串接 FSM + PreGameCheck + Collision + resolveNextScreen 的黏合層）從未定義
+- §2.4.4 MVP4 DoD 要求「E2E 整合測試：標題 → 選角 → 關卡 → 碰撞 → 判決 → 結算完整主流程」，
+  這需要一個協調器把 `GameFSM`、`validatePreGameAccess`、`calculateCollision`、`resolveNextScreen`、`RandomEventManager`、`TickEngine` 串起來。
+- 但 §14.1 目錄結構裡**沒有 controller/app 模組**，全文也沒有這個黏合層的 signature 或職責定義。
+- **待答**：定義 `GameController`（或等價黏合層）的位置與介面。它是 MVP4 E2E 測試的主要受測對象，不定義就無法寫 DoD 要求的整合測試。
+
+### Q22.3 🟡 `resolveNextScreen` 的 `hasBankruptTriggered` 與 `fsmState==='GAME_OVER_HARD_RESET'` 雙重訊號冗餘
+- §16.3 `resolveNextScreen` 第一個判斷是 `if (hasBankruptTriggered || fsmState === 'GAME_OVER_HARD_RESET')`。
+  這兩個訊號指向同一件事（破產）。若 `hasBankruptTriggered=true` 但 `fsmState` 不是 `GAME_OVER_HARD_RESET`，
+  代表 UI 與 FSM 狀態不同步，是潛在 bug 來源（兩個 source of truth）。
+- **待答**：是否移除 `hasBankruptTriggered`、純粹以 `fsmState` 為單一真相來源？（`resolveNextScreen` 本身是純函數、可立即實作+測試,只等這個介面決定。）
+
+### Q22.4 🟡 物理/導航純函數已建好，但「AI 路人碰瓷 timing」與「路人 `PEDESTRIAN_JUMP` → entryTick 紀錄」的驅動邏輯未定義
+- MVP1~MVP3 已把 `calculateCollision`、`updateVehiclePhysics`、`checkAABBCollision`、`processTurnError` 等純函數建齊，
+  但「AI 路人依 `aiAggressionRatio` 決定何時跳出」「玩家按 `PEDESTRIAN_JUMP` 後如何推進路人 Y 軸位移並記錄 `entryLaneTick`」
+  這類把純函數串成一局遊戲的 orchestration 邏輯，散落在 §2.2、§9.4、§15.3 但沒有集中的可測規格。
+- **待答**：這部分是否併入 Q22.2 的 `GameController` 一起定義？還是獨立一個 `LevelSimulator` 純函數層（吃 input + tick，吐新的 runtime state）？後者比較能維持 TDD。
+
+---
