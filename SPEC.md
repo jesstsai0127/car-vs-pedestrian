@@ -3901,33 +3901,39 @@ json
 # 第 21 章：MVP3 待釐清問題（Tick Engine & Random Events）
 
 > 針對 MVP3 範疇（§8、§9、§10）的第三輪缺口。狀態說明同第 19 章。
-> **開工策略**：SeededRNG（§8.1）與導航純函數（§10.4）規格完整無歧義，已先行實作；
-> `RandomEventManager` 三事件因下列缺口暫緩，等回覆後再動工。
 
-### Q21.1 🔴 `GameContext` 缺 `isBraking` 欄位，`BRAKE_FAILURE_EVENT` 的 canTrigger 無從判斷
-- §8.3.3 `BRAKE_FAILURE_EVENT` 觸發條件是「駕駛玩家正踩下煞車鍵 (`isBraking === true`)」，
-  但 §8.3.1 `GameContext` 只有 `isHornPressed`，**沒有 `isBraking` 欄位**。
-- **待答**：`GameContext` 是否新增 `isBraking: boolean`？（建議加，否則此事件的 `canTrigger` 寫不出來。）
+### Q21.1 🟢 `GameContext` 補齊 `isBraking`（2026-07-22 定案）
+- **決議**：`GameContext` 正式改為 `{ currentLevelId, vehicleSpeedKmh, isBraking, isHornPressed, pedestrianDistanceMeter }`。
+- **注意**：速度欄位改為 `vehicleSpeedKmh`（km/h），故 `STRAY_CAT_CROSSING` 觸發條件由「> 5.556 m/s」等價改寫為「`vehicleSpeedKmh > 20`」。
 
-### Q21.2 🔴 `HORN_STUN_EFFECT`（100% 主動觸發）如何套進機率式 `processRandomEvents`
-- §8.3.4 說喇叭定身是「條件滿足時 100% 主動觸發（非被動機率事件）」，
-  但 §8.4 `processRandomEvents` 對所有註冊事件一律用 `rng.nextBool(baseProbabilityPerSecond / 60)` 判定。
-  一個 100% 主動事件塞進這個機率迴圈會有矛盾：要讓 `p_tick >= 1.0`，`baseProbabilityPerSecond` 得 `>= 60`，
-  但該欄位註解寫的是 `0.0 ~ 1.0`。
-- **待答**：主動觸發型事件（喇叭定身）是否走跟機率型事件完全不同的路徑（例如由玩家輸入指令直接觸發、根本不進 `processRandomEvents` 的機率抽樣迴圈）？
-  還是 `canTrigger` 回 true 時就強制觸發、跳過 `nextBool`？請定義主動事件的統一處理規則。
+### Q21.2 🟢 主動/被動事件路徑分離（2026-07-22 定案）
+- **決議**：`processRandomEvents` 只處理被動機率事件（貓咪、煞車失靈）；`HORN_STUN_EFFECT` 移出為主動機制，由 `HornSystem` 100% 確定性觸發。
+- **已實作**：`src/core/events/hornSystem.ts`（`resolveHornStun` 純函數）+ 8 個測試。
 
-### Q21.3 🟡 「畫面中無其它貓咪實體」由 canTrigger 還是 Manager 的去重負責
-- §8.3.2 `STRAY_CAT_CROSSING` 的 `canTrigger` 需求包含「且畫面中無其它貓咪實體」，
-  但 `GameContext` 沒有「目前存在哪些實體/哪些事件正在執行」的欄位。
-- §8.4 `processRandomEvents` 已有 `isAlreadyActive`（同 `eventId` 執行中就不重複觸發）的去重機制。
-- **待答**：「無其它貓咪」這個條件是否就由 Manager 的 `isAlreadyActive` 去重涵蓋（那 `canTrigger` 內就不用、也無法檢查實體）？
-  還是 `GameContext` 要新增一個「當前實體清單」欄位讓 `canTrigger` 自行判斷？建議前者（靠 Manager 去重），請確認。
+### Q21.3 🟢 貓咪去重靠 Manager（2026-07-22 定案）
+- **決議**：採 `RandomEventManager` 內部 `isAlreadyActive` 去重，不污染 `GameContext`。
 
-### Q21.4 🟡 `TickEngine` 核心可測介面未定義
-- §9.1.1 只提到「單元測試可直接呼叫 `tickEngine.step(1)` 前進 1 Tick」與 render loop 的 accumulator 模式，
-  但沒有給出 `TickEngine` 的正式 class/interface signature（`step()` 回傳什麼？內部維護什麼狀態？是否負責呼叫 `processRandomEvents`/物理更新，還是只是一個 tick 計數器？）。
-- **待答**：`TickEngine` 在 `src/core/` 裡的職責邊界與 signature。建議先定義成「純計數 + 委派」：`step(n)` 推進 tick 數並回傳當前 tick，不直接耦合物理/事件（由呼叫端組裝），符合 §14.2 無副作用原則。請確認或給出你要的 signature。
+### Q21.4 🟢 `TickEngine` 純計數 + Callback（2026-07-22 定案）
+- **決議**：採「固定步長計數器 + `onTick` 訂閱」，`step()` 推進並回傳 tick，不耦合物理/事件。
+- **已實作**：`src/core/engine/TickEngine.ts` + 7 個測試。
+
+---
+
+## MVP3 剩餘接縫（Q21.5~Q21.7）——`RandomEventManager` 開工前的最後對齊
+
+> Q21.1 定案後的新 `GameContext`（5 欄位）與 §8.4 既有 `processRandomEvents` 參考程式碼之間有三處對不上，需先對齊才能寫 Manager。
+
+### Q21.5 🔴 `processRandomEvents` 需要的 `rng` 與 `currentTick` 已從 `GameContext` 移除
+- 新版 `GameContext`（Q21.1）不含 `rng` 與 `currentTick`，但 §8.4 的 `processRandomEvents` 內部用到 `context.rng.nextBool(...)` 與 `context.currentTick`。
+- **建議**：把 `rng: SeededRNG` 與 `currentTick: number` 當成 `processRandomEvents` 的**顯式參數**傳入（`processRandomEvents(context, currentTick, rng, activeEvents, registeredEvents)`），保持 `GameContext` 為乾淨的「世界快照」。請確認或改指定放回 `GameContext`。
+
+### Q21.6 🔴 `BRAKE_FAILURE_EVENT` 的機率是關卡動態值，但 `IRandomEvent.baseProbabilityPerSecond` 是固定欄位
+- §8.3.3 煞車失靈機率為 `p_sec = 0.01 × (N-1)`，隨 `currentLevelId` 變動；但 §8.3.1 `IRandomEvent` 只有固定的 `baseProbabilityPerSecond` 欄位，§8.4 迴圈也是讀這個固定值。
+- **建議**：`IRandomEvent` 新增方法 `getProbabilityPerSecond(context): number`（預設回傳 `baseProbabilityPerSecond`，煞車失靈事件 override 成 `0.01*(currentLevelId-1)`），`processRandomEvents` 改呼叫此方法而非直接讀欄位。請確認或提供其他做法。
+
+### Q21.7 🟡 `EventEffect.spawnEntities: IGameEntity[]` 對純核心層過重
+- §8.3.1 `EventEffect.spawnEntities` 型別是 `IGameEntity[]`，但 `IGameEntity`（§6.3）帶有 `onCollision`/`onTick` 等執行期行為，偏 runtime/UI，放進純事件效果結果裡會讓 `src/core/events/` 依賴較重的實體介面。
+- **建議**：核心層改用輕量生成描述子（如 `{ type: 'STRAY_CAT'; spawnDistanceMeter: number }[]`），由上層 runtime 再實體化成 `IGameEntity`。請確認或維持原 `IGameEntity[]`。
 
 ---
 
