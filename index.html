@@ -7,7 +7,8 @@
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
       html, body { height: 100%; background: #1a1a1a; overflow: hidden; font-family: system-ui, "Noto Sans TC", sans-serif; }
-      #game { display: block; width: 100vw; height: 100vh; background: #2b2b2b; touch-action: none; }
+      /* 100vh 在手機（尤其直式）會被網址列/工具列干擾，優先用 100dvh（動態視窗高度），不支援時退回 100vh */
+      #game { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #2b2b2b; touch-action: none; }
     </style>
   </head>
   <body>
